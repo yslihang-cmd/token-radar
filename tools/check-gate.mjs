@@ -1,13 +1,22 @@
 // Local stand-in for the house gate (RULES.txt "The gate", seven checks).
-// Run: node tools/check-gate.mjs [outDir]
+// Run: node tools/check-gate.mjs [outDir] [snapshotFile]
 // It reads the same files the scorer reads and applies the same limits, so a green run here is
 // evidence, not a promise: the house still has the last word.
+//
+// Every check is written so that it cannot pass by accident. A check that cannot read its
+// input fails; it never quietly reports nothing. The gate is only worth running if a broken
+// bundle turns it red.
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const out = process.argv[2] ?? 'out';
-const snapshot = JSON.parse(readFileSync(process.argv[3] ?? 'input/snapshot.json', 'utf8'));
+const here = dirname(fileURLToPath(import.meta.url));
+const repo = resolve(here, '..');
+
+const out = resolve(process.argv[2] ?? 'out');
+const snapshotPath = resolve(process.argv[3] ?? join(repo, 'input', 'snapshot.json'));
+const snapshot = JSON.parse(readFileSync(snapshotPath, 'utf8'));
 const slugs = new Set(snapshot.protocols.map((p) => p.slug));
 const watchlist = new Set(snapshot.watchlist);
 const results = [];
@@ -15,14 +24,20 @@ const fail = (name, detail) => results.push({ ok: false, name, detail });
 const pass = (name, detail) => results.push({ ok: true, name, detail });
 
 // --- board_file ---
+// The board is read once and every later check works from the same rows, so the gate cannot
+// pass a sorted check against a board it never managed to read.
 let rows = [];
+let boardRead = false;
 try {
   const raw = JSON.parse(readFileSync(join(out, 'board.json'), 'utf8'));
-  rows = Array.isArray(raw) ? raw : raw.rows;
+  const list = Array.isArray(raw) ? raw : raw.rows;
+  if (!Array.isArray(list)) throw new Error('board.json holds no rows array');
+  rows = list;
+  boardRead = true;
 } catch (e) {
   fail('board_file', `board.json unreadable: ${e.message}`);
 }
-if (rows.length) {
+if (boardRead) {
   const problems = [];
   if (rows.length < 100 || rows.length > 4000) problems.push(`row count ${rows.length} outside 100..4000`);
   const seen = new Set();
@@ -50,13 +65,17 @@ if (rows.length) {
 
 // --- sorted_by_value ---
 {
-  const ranks = rows.map((r) => r.rank).sort((a, b) => a - b);
   const problems = [];
-  for (let i = 0; i < ranks.length; i++) if (ranks[i] !== i + 1) { problems.push('ranks are not exactly 1..N once each'); break; }
-  const byRank = [...rows].sort((a, b) => a.rank - b.rank);
-  for (let i = 1; i < byRank.length; i++) {
-    if (byRank[i].implied_value_usd > byRank[i - 1].implied_value_usd) {
-      problems.push(`implied value rises at rank ${byRank[i].rank} (${byRank[i].slug})`); break;
+  if (!boardRead) {
+    problems.push('no board to sort');
+  } else {
+    const ranks = rows.map((r) => r.rank).sort((a, b) => a - b);
+    for (let i = 0; i < ranks.length; i++) if (ranks[i] !== i + 1) { problems.push('ranks are not exactly 1..N once each'); break; }
+    const byRank = [...rows].sort((a, b) => a.rank - b.rank);
+    for (let i = 1; i < byRank.length; i++) {
+      if (byRank[i].implied_value_usd > byRank[i - 1].implied_value_usd) {
+        problems.push(`implied value rises at rank ${byRank[i].rank} (${byRank[i].slug})`); break;
+      }
     }
   }
   if (problems.length) fail('sorted_by_value', problems.join('; ')); else pass('sorted_by_value', 'ranks 1..N, values non-rising');
@@ -81,29 +100,6 @@ if (rows.length) {
   if (bad) fail('farm_steps', `${bad} rows with a bad farm_steps array`); else pass('farm_steps', `all ${rows.length} rows carry 3..12 steps of 20..600 chars`);
 }
 
-/**
- * One named function out of the page's source, as text: from its `function name(` line to the
- * line that closes it. The page's functions are written one per statement block at a known
- * indentation, so the block ends at the first line that closes the brace it opened.
- */
-function extractFunction(source, name) {
-  const lines = source.split('\n');
-  const at = lines.findIndex((l) => new RegExp(`^\\s*function ${name}\\(`).test(l));
-  if (at < 0) return null;
-  let depth = 0;
-  let started = false;
-  const out = [];
-  for (let i = at; i < lines.length; i++) {
-    out.push(lines[i]);
-    for (const ch of lines[i]) {
-      if (ch === '{') { depth++; started = true; }
-      else if (ch === '}') depth--;
-    }
-    if (started && depth === 0) return out.join('\n');
-  }
-  return null;
-}
-
 // --- page_agrees_with_the_board ---
 // The judge reads the page's source and the screenshots, not lib/model.ts. So the plan the page
 // renders has to be the plan board.json carries, word for word: the page is a second copy of the
@@ -111,11 +107,13 @@ function extractFunction(source, name) {
 // every row and compares both the implied values and the farm steps.
 {
   const problems = [];
-  const parity = join('tools', 'check-parity.mjs');
+  const parity = join(here, 'check-parity.mjs');
   if (!existsSync(parity)) {
     problems.push('tools/check-parity.mjs is missing');
   } else {
-    const r = spawnSync(process.execPath, [parity, out], { encoding: 'utf8' });
+    // The parity check reads lib/model.ts and the built dashboard, so it runs from the repo root
+    // no matter where the gate was invoked from.
+    const r = spawnSync(process.execPath, [parity, out, snapshotPath], { encoding: 'utf8', cwd: repo });
     const text = `${r.stdout ?? ''}${r.stderr ?? ''}`;
     const line = text.split('\n').find((l) => l.startsWith('PASS') || l.startsWith('FAIL')) ?? text.trim();
     if (r.status !== 0) {

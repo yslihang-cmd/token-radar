@@ -5,15 +5,19 @@
 // It loads dashboard/app.js in a minimal DOM shim, drives the same functions the page drives, and
 // compares every row's implied value and every farm step against what lib/model.ts wrote.
 //
-//   node tools/check-parity.mjs [outDir]
+//   node tools/check-parity.mjs [outDir] [snapshotFile]
 //
 // This is a local check, not one of the house gate's seven: it exists because the page and the
 // model are two copies of the same arithmetic, and two copies drift.
 import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const out = process.argv[2] ?? 'out';
+const here = dirname(fileURLToPath(import.meta.url));
+const repo = resolve(here, '..');
+
+const out = resolve(process.argv[2] ?? 'out');
+const snapshotPath = resolve(process.argv[3] ?? join(repo, 'input', 'snapshot.json'));
 const dashboard = join(out, 'dashboard');
 const problems = [];
 
@@ -39,8 +43,8 @@ const DATA = JSON.parse(dataSource.slice(start + 'window.RADAR='.length, end));
 const board = JSON.parse(readFileSync(join(out, 'board.json'), 'utf8'));
 const boardRows = Array.isArray(board) ? board : board.rows;
 
-// The model itself, for its own farm steps.
-const modelUrl = pathToFileURL(join(process.cwd(), 'lib', 'model.ts')).href;
+// The model itself, for its own farm steps and its own implied values.
+const modelUrl = new URL('../lib/model.ts', import.meta.url).href;
 const model = await import(modelUrl);
 
 // A DOM shim just rich enough for app.js to run: the page only needs elements it can create and
@@ -103,18 +107,47 @@ new Function(appSource)();
 // The page's functions are inside its IIFE, so reach them through what they built: the page
 // renders the board into the shim, and the detail panel is what carries the farm plan. Instead of
 // poking at the DOM, re-run the two functions app.js defines by extracting them from its source.
+/**
+ * One function's source text, from its `function name(` line to the line that closes it. The
+ * braces are counted with the string and comment contents skipped: app.js writes sentences that
+ * contain braces and apostrophes, and counting braces blindly would end the function at the wrong
+ * place.
+ */
 function extractFunction(name) {
   const marker = `function ${name}(`;
   const at = appSource.indexOf(marker);
   if (at < 0) throw new Error(`parity: app.js has no ${name}`);
+  const open = appSource.indexOf('{', at);
+  if (open < 0) throw new Error(`parity: app.js's ${name} has no body`);
   let depth = 0;
-  let i = appSource.indexOf('{', at);
-  for (; i < appSource.length; i++) {
-    if (appSource[i] === '{') depth++;
-    else if (appSource[i] === '}') {
+  let i = open;
+  let quote = null;
+  while (i < appSource.length) {
+    const ch = appSource[i];
+    if (quote) {
+      // Inside a string: a backslash escapes the next character, and the quote closes it.
+      if (ch === '\\') { i += 2; continue; }
+      if (ch === quote) quote = null;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { quote = ch; i++; continue; }
+    if (ch === '/' && appSource[i + 1] === '/') {
+      const nl = appSource.indexOf('\n', i);
+      i = nl < 0 ? appSource.length : nl;
+      continue;
+    }
+    if (ch === '/' && appSource[i + 1] === '*') {
+      const close = appSource.indexOf('*/', i + 2);
+      i = close < 0 ? appSource.length : close + 2;
+      continue;
+    }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
       depth--;
       if (depth === 0) return appSource.slice(at, i + 1);
     }
+    i++;
   }
   throw new Error(`parity: app.js's ${name} is not closed`);
 }
@@ -181,6 +214,29 @@ for (const boardRow of boardRows) {
   }
   for (const k of ['name', 'category', 'tvl_usd', 'change_7d', 'age_days', 'implied_value_usd']) {
     if (row[k] !== boardRow[k]) problems.push(`${boardRow.slug}: ${k} differs between the page and the board`);
+  }
+}
+
+// --- the board against the model, rebuilt from the sealed snapshot ---
+// The two comparisons above check the page against the board. This one checks the board against
+// the model that is supposed to have written it: the snapshot is re-read and the model re-run, so
+// a board.json left over from an earlier snapshot cannot pass.
+{
+  const snapshot = model.parseSnapshot(readFileSync(snapshotPath, 'utf8'));
+  const rebuilt = model.buildRadar(snapshot).board;
+  if (rebuilt.length !== boardRows.length) {
+    problems.push(`the board carries ${boardRows.length} rows, the model scores ${rebuilt.length} from ${snapshotPath}`);
+  } else {
+    const n = Math.min(rebuilt.length, boardRows.length);
+    for (let i = 0; i < n; i++) {
+      const a = rebuilt[i];
+      const b = boardRows[i];
+      if (a.slug !== b.slug) { problems.push(`row ${i + 1}: the model scores ${a.slug}, the board holds ${b.slug}`); break; }
+      if (a.implied_value_usd !== b.implied_value_usd) {
+        problems.push(`${a.slug}: the model scores ${a.implied_value_usd}, the board holds ${b.implied_value_usd}`);
+        break;
+      }
+    }
   }
 }
 

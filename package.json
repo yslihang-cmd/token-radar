@@ -1,8 +1,18 @@
 {
   "name": "token-radar",
   "version": "1.0.0",
-  "description": "make.fun token-radar-01 entry: a launch radar for pre-token protocols. It reads a sealed DefiLlama snapshot, ranks protocols that have no token yet by implied post-launch value with a fully stated arithmetic model, writes a static dashboard plus per-protocol air-farm plans, and ships everything offline — no network, no framework, no build step. Node 22, standard library only.",
+  "description": "make.fun token-radar-01 entry: a launch radar for pre-token protocols. It reads a sealed DefiLlama snapshot, ranks the protocols that record no token yet by what a launch would be worth under a fully stated arithmetic model, writes a static dashboard plus a per-protocol airdrop-farming plan, and ships everything offline — no network, no framework, no build step. Node 22+, standard library only.",
+  "keywords": [
+    "defi",
+    "airdrops",
+    "defillama",
+    "dashboard",
+    "makefun"
+  ],
+  "license": "MIT",
   "private": true,
   "type": "module",
-  "license": "MIT"
+  "engines": {
+    "node": ">=22"
+  }
 }

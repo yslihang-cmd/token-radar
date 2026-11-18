@@ -219,7 +219,7 @@
     formula.innerHTML =
       '<span class="term">implied_value</span> = <span class="term2">anchor</span> × <span class="term">TVL</span><sup>' + DATA.model.size_exponent + '</sup> × <span class="term2">growth</span> × <span class="term">maturity</span>' +
       '<br>' +
-      '<span class="term2">anchor</span> = median of (market cap ÷ TVL<sup>' + DATA.model.size_exponent + '</sup>) over this protocol’s own live peers, blended on the logarithm with the all-category median (' + DATA.global_anchor.toFixed(2) + '): with k live peers, trust = k ÷ (k + 3)' +
+      '<span class="term2">anchor</span> = median of (market cap ÷ TVL<sup>' + DATA.model.size_exponent + '</sup>) over live peers of the same category, blended on the log with the all-category median (' + DATA.global_anchor.toFixed(2) + '); with k peers, trust = k ÷ (k + 3)' +
       '<br>' +
       '<span class="term">growth</span> = 1 + ' + DATA.model.growth_weight + ' × (7d TVL change ÷ 100), clamped to [' + DATA.model.growth_floor + '%, ' + DATA.model.growth_cap + '%]' +
       '<br>' +

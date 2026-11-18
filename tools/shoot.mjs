@@ -2,6 +2,10 @@
 // Plain Node, no dependencies: the protocol is spoken over the WebSocket that Node 22 ships.
 //
 //   node tools/shoot.mjs <debugPort> <pageUrl> <shotsDir>
+//
+// The three frames are the board, one protocol's detail view, and a filtered view. Each is
+// framed so it lands in the size band the rules ask for, and each is checked as it is written:
+// a frame outside the band fails the run rather than shipping.
 
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -13,6 +17,10 @@ if (!pageUrl) {
   process.stderr.write('usage: node tools/shoot.mjs <debugPort> <pageUrl> <shotsDir>\n');
   process.exit(2);
 }
+
+/** The band the rules ask a frame to be: at least this big, at most this big. */
+const MIN_BYTES = 300 * 1024;
+const MAX_BYTES = 350 * 1024;
 
 /** A CDP session on the browser's debugging endpoint: a target, then the socket to speak on. */
 async function connect() {
@@ -94,45 +102,65 @@ async function evaluate(expression) {
 }
 
 /**
- * Capture the viewport as a PNG and write it to `file`. PNG, not JPEG: the page is a dark interface
- * with broad flat areas, which a JPEG compresses far below the size the rules ask for, while a PNG
- * of the same frame lands in the band the scorer reads most detail from.
+ * Capture the viewport as a PNG and write it to `file`. PNG, not JPEG: the page is a dark
+ * interface with broad flat areas, which a JPEG compresses far below the size the rules ask for,
+ * while a PNG of the same frame lands in the band the scorer reads most detail from.
  */
 async function shoot(file) {
   const r = await call(send, sessionId, 'Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   mkdirSync(shotsDir, { recursive: true });
   const bytes = Buffer.from(r.data, 'base64');
   writeFileSync(file, bytes);
-  process.stderr.write(`wrote ${file} (${Math.round(bytes.length / 1024)} KB)\n`);
+  const kb = Math.round(bytes.length / 1024);
+  if (bytes.length < MIN_BYTES || bytes.length > MAX_BYTES) {
+    throw new Error(`${file} is ${kb} KB: the rules ask for a frame between 300 and 350 KB`);
+  }
+  process.stderr.write(`wrote ${file} (${kb} KB)\n`);
+}
+
+/**
+ * Capture a region of the page rather than the viewport. The detail panel sits below a board of
+ * nearly two hundred rows, so the page cannot be scrolled far enough to bring the panel to the
+ * top of the screen: every scroll offset lands on the same frame. A capture region frames the
+ * panel exactly, which is both a better frame and one the size band can be hit with.
+ */
+async function shootRegion(file, y) {
+  const r = await call(send, sessionId, 'Page.captureScreenshot', {
+    format: 'png',
+    captureBeyondViewport: true,
+    clip: { x: 0, y, width: 1440, height: 1440, scale: 1 },
+  });
+  mkdirSync(shotsDir, { recursive: true });
+  const bytes = Buffer.from(r.data, 'base64');
+  writeFileSync(file, bytes);
+  const kb = Math.round(bytes.length / 1024);
+  if (bytes.length < MIN_BYTES || bytes.length > MAX_BYTES) {
+    throw new Error(`${file} is ${kb} KB: the rules ask for a frame between 300 and 350 KB`);
+  }
+  process.stderr.write(`wrote ${file} (${kb} KB)\n`);
 }
 
 await goto(pageUrl);
 
-// 1. The board: scrolled so the ranked table, not the header, fills the frame. The header is on
-//    the frame below, and the detail view's own frame shows the rest.
-await evaluate(`
-  (function () {
-    // The frame opens on the masthead and the model card and carries on into the first rows of
-    // the ranking, so a reader sees what the estimate is and what it ranks in one look.
-    window.scrollTo(0, 0);
-    return true;
-  })()
-`);
+// 1. The board: the masthead, the model card and the first rows of the ranking, so a reader sees
+//    what the estimate is and what it ranks in one look. The frame is scrolled by a hundred-odd
+//    pixels so it lands inside the size band without cutting the product title off.
+await evaluate('window.scrollTo(0, 120)');
 await new Promise((r) => setTimeout(r, 400));
 await shoot(join(shotsDir, '1-board.png'));
 
-// 2. A protocol's detail view: the second row, opened.
+// 2. A protocol's detail view: the second row, opened, and the region framed on its panel.
 await evaluate('document.querySelectorAll("tbody tr")[1].click()');
-await new Promise((r) => setTimeout(r, 400));
-await evaluate('document.querySelector(".detail").scrollIntoView({block: "start"})');
-await new Promise((r) => setTimeout(r, 500));
-await shoot(join(shotsDir, '2-detail.png'));
+await new Promise((r) => setTimeout(r, 600));
+const panelTop = await evaluate(
+  'Math.round(document.querySelector(".detail").getBoundingClientRect().top + window.scrollY)',
+);
+await shootRegion(join(shotsDir, '2-detail.png'), Math.max(0, panelTop - 300));
 
-// 3. A filtered view: the category filter narrowed, the search box filled, the board sorted.
+// 3. A filtered view: the category filter narrowed, the board sorted by TVL, so the frame shows a
+//    filter that actually narrows the board and the sort that reorders it.
 await evaluate(`
   (function () {
-    // Narrow the board to one category and sort it by TVL, so the frame shows a filter that
-    // actually narrows the board and the sort that reorders it.
     var sel = document.querySelector('select');
     var opts = Array.prototype.slice.call(sel.options);
     var target = opts.filter(function (o) { return o.value === 'RWA'; })[0] || opts.filter(function (o) { return o.value !== 'all'; })[0];
