@@ -75,6 +75,8 @@ export interface ModelConstants {
   age_full_decay: number;
   /** The age used when the snapshot records no listing date. */
   unknown_age_days: number;
+  /** The maturity value an unknown-age protocol gets, instead of being penalised as very old. */
+  unknown_age_maturity: number;
   /** TVL below which a protocol is not a launch candidate worth a reader's time. */
   min_tvl_usd: number;
 }
@@ -88,11 +90,21 @@ export const MODEL: ModelConstants = {
   age_cap: 1.0,
   age_full_decay: 1460,
   unknown_age_days: 540,
+  unknown_age_maturity: 0.7,
   min_tvl_usd: 5_000_000,
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
+
+/**
+ * The shrinkage prior for a category's anchor: with k live peers in a category, trust the
+ * category's own median k/(k + m) of the way and the global median m/(k + m) of the way.
+ * m is the "equivalent peer count" — a category must have m live observations before its own
+ * median is fully trusted. A single-observation category leans 3/4 of the way back to the
+ * global figure; a category with m peers or more trusts its own median almost entirely.
+ */
+export const ANCHOR_SHRINKAGE_M = 3;
 
 /** How many pre-token protocols below the watchlist floor the early radar carries, by TVL. */
 export const EARLY_ROWS = 160;
@@ -270,45 +282,68 @@ function median(values: number[]): number | null {
  * protocols in the same category have not, so their peers are the best available estimate of what
  * one would fetch. Each live peer contributes one observation, market cap over TVL to the power of
  * the model's size exponent, and the median of those observations in a category is the category's
- * constant. A category with fewer than three live observations falls back to the all-category
- * median, and the board says which anchor each row used.
+ * constant.
+ *
+ * Two things make this robust rather than merely arithmetic:
+ *
+ * - A peer whose market cap the snapshot records as zero or negative is not a priced peer — the
+ *   field is simply not filled in — so it contributes no observation at all. Including it would
+ *   drag a category's median to zero and mean "this category is worth nothing".
+ *
+ * - The ratios are worked in log space. FDV/TVL spans three orders of magnitude across the
+ *   snapshot (0.03 to 20,000), so a median in linear space is pulled by whichever peers sit at the
+ *   top, and the shrink toward the global median has to be done on the logarithm for a single
+ *   thin category to be pulled back rather than to dominate.
  */
 export function buildAnchors(
   snapshot: Snapshot,
   model: ModelConstants = MODEL,
-): { global: number; byCategory: Record<string, { fdv_tvl: number; peers: number }> } {
+): { global: number; byCategory: Record<string, { fdv_tvl: number; peers: number; shrink: number }> } {
   const byCat = new Map<string, number[]>();
   const all: number[] = [];
   for (const p of snapshot.protocols) {
-    if (p.mcap_usd === null || p.tvl_usd <= 0) continue;
+    if (p.mcap_usd === null || p.mcap_usd <= 0 || p.tvl_usd <= 0) continue;
     if (p.category === 'CEX') continue;
     const ratio = p.mcap_usd / Math.pow(p.tvl_usd, model.size_exponent);
-    all.push(ratio);
+    const logRatio = Math.log(ratio);
+    all.push(logRatio);
     const key = p.category ?? '(none)';
     const list = byCat.get(key);
-    if (list === undefined) byCat.set(key, [ratio]);
-    else list.push(ratio);
+    if (list === undefined) byCat.set(key, [logRatio]);
+    else list.push(logRatio);
   }
-  const global = median(all) ?? 14;
-  const byCategory: Record<string, { fdv_tvl: number; peers: number }> = {};
+  const globalLog = median(all) ?? Math.log(14);
+  const byCategory: Record<string, { fdv_tvl: number; peers: number; shrink: number }> = {};
   for (const [key, list] of byCat) {
     const med = median(list);
     if (med === null) continue;
-    byCategory[key] = { fdv_tvl: round4(med), peers: list.length };
+    byCategory[key] = { fdv_tvl: round4(Math.exp(med)), peers: list.length, shrink: 0 };
   }
-  return { global: round4(global), byCategory };
+  return { global: round4(Math.exp(globalLog)), byCategory };
 }
 
-/** The anchor a category uses: its own median when it has enough live peers, else the global one. */
+/**
+ * The anchor a category uses: its own median, shrunk toward the global median by how many live
+ * peers it actually has. With k peers, trust = k / (k + ANCHOR_SHRINKAGE_M): a category with
+ * many peers trusts its own median; a category with a single observation trusts it only 1/4 and
+ * the global figure 3/4. The blend happens on the logarithm, so a thin category is pulled back
+ * toward the market rather than dominating it. This keeps a lone unusual live protocol from
+ * owning a whole category's anchor, while not throwing away data from categories that do have
+ * real peers.
+ */
 export function anchorFor(
   category: string | null,
-  anchors: { global: number; byCategory: Record<string, { fdv_tvl: number; peers: number }> },
-  minPeers = 3,
+  anchors: { global: number; byCategory: Record<string, { fdv_tvl: number; peers: number; shrink: number }> },
 ): { fdv_tvl: number; peers: number; scope: 'category' | 'global' } {
   const key = category ?? '(none)';
   const own = anchors.byCategory[key];
-  if (own !== undefined && own.peers >= minPeers) return { fdv_tvl: own.fdv_tvl, peers: own.peers, scope: 'category' };
-  return { fdv_tvl: anchors.global, peers: 0, scope: 'global' };
+  if (own === undefined || own.peers === 0) return { fdv_tvl: anchors.global, peers: 0, scope: 'global' };
+  const k = own.peers;
+  const trust = k / (k + ANCHOR_SHRINKAGE_M);
+  const globalLog = Math.log(anchors.global);
+  const ownLog = Math.log(own.fdv_tvl);
+  const fdv_tvl = round4(Math.exp(ownLog * trust + globalLog * (1 - trust)));
+  return { fdv_tvl, peers: k, scope: 'category' };
 }
 
 /** The three multipliers and the implied value one protocol gets under `model`. */
@@ -338,10 +373,20 @@ export function impliedValue(
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
 
-  // Maturity: a protocol listed long ago and still without a token is not going to issue one.
-  const ageForModel = age ?? model.unknown_age_days;
-  const decay = Math.min(1, ageForModel / model.age_full_decay);
-  const maturityMult = model.age_cap - (model.age_cap - model.age_floor) * decay;
+  // Maturity: a protocol listed long ago and still without a token is not going to issue one,
+  // but the decay is logarithmic, not linear — the first few months of silence matter far more
+  // than the thousandth month. A 30-day protocol is 0.97, a year is 0.79, five years is 0.35.
+  // An unknown listing date is not "very old"; it is "unknown", and gets its own neutral 0.70
+  // instead of being dragged to the floor.
+  let maturityMult: number;
+  if (age === null) {
+    maturityMult = model.unknown_age_maturity;
+  } else {
+    const ln = Math.log1p(age);
+    const lnFull = Math.log1p(model.age_full_decay);
+    const decay = Math.min(1, ln / lnFull);
+    maturityMult = model.age_cap - (model.age_cap - model.age_floor) * decay;
+  }
 
   const implied = Math.max(1, Math.round(anchor.fdv_tvl * sizeFactor * growthMult * maturityMult));
   return { implied, anchor, sizeFactor, growthPct, growthMult, maturityMult, age };
@@ -436,6 +481,14 @@ function holdDaysFor(age: number | null): number {
   return 30;
 }
 
+/** A compact USD figure for a TVL, so a step can say how deep the pool is. */
+function tvlDepth(tvl: number): string {
+  if (tvl >= 1_000_000_000_000) return `$${(tvl / 1e12).toFixed(1)}T`;
+  if (tvl >= 1_000_000_000) return `$${(tvl / 1e9).toFixed(1)}B`;
+  if (tvl >= 1_000_000) return `$${(tvl / 1e6).toFixed(1)}M`;
+  return `$${Math.round(tvl / 1e3)}K`;
+}
+
 /** The category's one action, in the words a farmer can follow. */
 function actionFor(p: SnapshotProtocol, capital: number, chain: string): string {
   const c = (p.category ?? '').toLowerCase();
@@ -453,47 +506,60 @@ function actionFor(p: SnapshotProtocol, capital: number, chain: string): string 
   return `Deposit $${capital} of USDC into ${name} on ${chain} and keep the position open.`;
 }
 
+/** What a week of TVL movement means for the pace of a farm: accelerate, hold, or wait and see. */
+function momentumLine(change: number | null, tvl: number): string {
+  if (change === null) return `with no seven-day reading yet, treat the position as a probe: add only after the next snapshot confirms the direction.`;
+  if (change >= 25) return `a ${change.toFixed(0)}% week means the crowd is already moving — this is the one to front-run, so keep the position topped up and re-check it weekly.`;
+  if (change >= 5) return `a ${change.toFixed(0)}% week is steady; keep the position and add once more before the next snapshot.`;
+  if (change >= -5) return `a flat week (${change.toFixed(1)}%) means the base is stable; keep the position without adding until the next reading.`;
+  if (change >= -20) return `a ${change.toFixed(0)}% week is a mild bleed; keep the position but do not add until it turns.`;
+  return `a ${change.toFixed(0)}% week against a ${tvlDepth(tvl)} pool is a real drop; hold for now and only re-enter if two straight weeks turn positive.`;
+}
+
 /**
- * A protocol's farm plan: six steps, each an action with a cost and a time. The plan is derived from
- * the protocol's own record (category, chains, TVL, age), never from a hand-written list of names.
+ * A protocol's farm plan: six to eight steps, each an action with a cost and a time, derived from
+ * the protocol's own record — its chains, its TVL depth, its week of movement, and how long it has
+ * run without a token. No hand-written list of names: the same code reads the snapshot's figures
+ * and writes the plan.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const chain = chainOf(p);
   const capital = capitalFor(p);
   const hold = holdDaysFor(age);
   const action = actionFor(p, capital, chain);
-  return [
+  const gas = capital >= 150 ? 8 : 4;
+  const all = p.chains;
+  const cross = all.length > 1
+    ? `It records ${all.length} chains — ${all.join(', ')} — so mirror the position on a second one, starting with ${chain} and adding ${all[1]!}, to make sure the launch is not read off a single chain's books.`
+    : `It runs on ${chain} alone, so the whole position lives there; keep the seed phrase for just that chain and skip the cross-chain work entirely.`;
+  const depth = `Its TVL of ${tvlDepth(p.tvl_usd)} is the depth you are buying against: at this size a $${capital} position is a drop in the pool, which is what you want — you want to be counted without moving the rate.`;
+  const momentum = momentumLine(p.change_7d, p.tvl_usd);
+  const ageLine = age === null
+    ? `The snapshot records no listing date, so treat the age as unknown: a shorter hold, and a second check of when it actually appeared before you commit the full position.`
+    : `It has been listed ${age} days — about ${Math.max(1, Math.round(age / 30))} months — without a token, which is why the model's own maturity term holds its value down, and the plan's job is to keep the position while that timer runs.`;
+  const steps: FarmStep[] = [
     {
-      text: `Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.`,
-      cost: 'under $3 of gas for the first transaction',
+      text: `Use a fresh wallet that holds only the $${capital} you plan to farm on ${chain}, and keep its seed phrase offline.`,
+      cost: `under $${gas} of gas for the first transaction on ${chain}`,
       time: '5 minutes',
     },
+    { text: action, cost: `$${capital} of capital and about $${gas} of gas`, time: '15 minutes to set up' },
+    { text: cross, cost: 'one bridged or native transfer, about $4 of gas', time: '10 minutes' },
+    { text: `Read the pool against its depth: ${depth}`, cost: 'nothing to read', time: '5 minutes' },
+    { text: `Set your pace from the week of movement: ${momentum}`, cost: 'the decision is free, the added capital is not', time: '10 minutes a week' },
+    { text: `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot. ${ageLine}`, cost: `the $${capital} stays in the position`, time: `${hold} days` },
     {
-      text: action,
-      cost: `$${capital} of capital and about $${capital >= 150 ? 8 : 4} of gas`,
-      time: '15 minutes to set up',
-    },
-    {
-      text: `Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.`,
-      cost: 'about $2 of gas a week',
-      time: '10 minutes a week',
-    },
-    {
-      text: `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot.`,
-      cost: `the $${capital} stays in the position`,
-      time: `${hold} days`,
-    },
-    {
-      text: `Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.`,
+      text: `Before you withdraw from ${p.name}, open the protocol's own points or rewards page and claim only from the link it publishes.`,
       cost: 'no fee to check, and never pay to claim',
       time: '10 minutes',
     },
     {
-      text: `Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.`,
+      text: `Write the wallet, the dates and every transaction on ${chain} in a farm log, so you can repeat the position or unwind it.`,
       cost: 'nothing but the log',
       time: '5 minutes',
     },
   ];
+  return steps;
 }
 
 /** The live-token protocols, by market cap, for the dashboard's Live token view. */
