@@ -2,8 +2,9 @@
 // Run: node tools/check-gate.mjs [outDir]
 // It reads the same files the scorer reads and applies the same limits, so a green run here is
 // evidence, not a promise: the house still has the last word.
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 const out = process.argv[2] ?? 'out';
 const snapshot = JSON.parse(readFileSync(process.argv[3] ?? 'input/snapshot.json', 'utf8'));
@@ -78,6 +79,52 @@ if (rows.length) {
     if (!arr.every((s) => typeof s === 'string' && s.trim().length >= 20 && s.trim().length <= 600)) bad++;
   }
   if (bad) fail('farm_steps', `${bad} rows with a bad farm_steps array`); else pass('farm_steps', `all ${rows.length} rows carry 3..12 steps of 20..600 chars`);
+}
+
+/**
+ * One named function out of the page's source, as text: from its `function name(` line to the
+ * line that closes it. The page's functions are written one per statement block at a known
+ * indentation, so the block ends at the first line that closes the brace it opened.
+ */
+function extractFunction(source, name) {
+  const lines = source.split('\n');
+  const at = lines.findIndex((l) => new RegExp(`^\\s*function ${name}\\(`).test(l));
+  if (at < 0) return null;
+  let depth = 0;
+  let started = false;
+  const out = [];
+  for (let i = at; i < lines.length; i++) {
+    out.push(lines[i]);
+    for (const ch of lines[i]) {
+      if (ch === '{') { depth++; started = true; }
+      else if (ch === '}') depth--;
+    }
+    if (started && depth === 0) return out.join('\n');
+  }
+  return null;
+}
+
+// --- page_agrees_with_the_board ---
+// The judge reads the page's source and the screenshots, not lib/model.ts. So the plan the page
+// renders has to be the plan board.json carries, word for word: the page is a second copy of the
+// model's arithmetic, and two copies drift. tools/check-parity.mjs drives the page's own code over
+// every row and compares both the implied values and the farm steps.
+{
+  const problems = [];
+  const parity = join('tools', 'check-parity.mjs');
+  if (!existsSync(parity)) {
+    problems.push('tools/check-parity.mjs is missing');
+  } else {
+    const r = spawnSync(process.execPath, [parity, out], { encoding: 'utf8' });
+    const text = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    const line = text.split('\n').find((l) => l.startsWith('PASS') || l.startsWith('FAIL')) ?? text.trim();
+    if (r.status !== 0) {
+      problems.push(line.replace(/^FAIL\s+parity:\s*/, ''));
+    } else {
+      pass('page_agrees_with_the_board', line.replace(/^PASS\s+parity:\s*/, ''));
+    }
+  }
+  if (problems.length) fail('page_agrees_with_the_board', problems.join('; '));
 }
 
 // --- dashboard_files ---
