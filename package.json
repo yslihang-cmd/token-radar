@@ -1,0 +1,8 @@
+{
+  "name": "token-radar",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Token launch radar: pre-token protocols ranked by implied value, with farm plans.",
+  "license": "MIT"
+}
