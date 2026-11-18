@@ -1,86 +1,40 @@
-// The token radar's model: one sealed snapshot of the protocol universe in, one ranked board out.
+// The token radar's model: one snapshot of the protocol universe in, one ranked board out.
 //
-// The board answers a question a trader asks: of the protocols that record no token yet, which
-// are worth preparing for, and what should a reader do about each one? Two things follow from
+// The board's job is to answer a question a trader asks: of the protocols that record no token yet,
+// which are worth preparing for, and what should a reader do about each one? Two things follow from
 // that, and this file is where they are decided.
 //
-// 1. WHAT A LAUNCH WOULD BE WORTH. Every number comes out of the snapshot itself; no protocol
-//    name is ever special-cased. The estimate is one product of four factors:
+// 1. What a launch would be worth. The implied value of a pre-token protocol is estimated from the
+//    snapshot's own figures, never from a name. The estimate has three parts:
 //
-//        implied = max(1, round(anchor x size x growth x maturity))
+//      anchor    = the constant that turns a protocol's size into what its category's already
+//                  trading peers command. It is read out of the snapshot itself: every protocol in
+//                  it that already trades gives one observation of market cap over its size, and
+//                  the median of those observations, per category, is the anchor. A category with
+//                  too few observations falls back to the all-category median. So the anchor moves
+//                  with the data and is stated on the page; it is not a constant someone chose.
 //
-//    anchor    The constant that converts a protocol's size into what its category's already
-//              trading peers command. It is read out of the snapshot, not chosen: every protocol
-//              in the file that already trades and records a real market cap contributes one
-//              observation
+//      size      = tvl raised to the model's size exponent (0.75) rather than tvl itself. TVL is
+//                  the protocol's footprint, and a footprint ten times larger is worth more than
+//                  ten times a launch, not less: the sub-linear exponent is the usual shape of
+//                  that curve, and it stops one whale from owning the board.
 //
-//                  observation = market_cap_usd / tvl_usd ** size_exponent
+//      momentum  = a growth term from the seven-day TVL change, and a maturity term from how long
+//                  the protocol has been listed without a token. A protocol that has run for years
+//                  without a token is a protocol that does not intend to have one, so age lowers the
+//                  estimate; a protocol that is growing is closer to a launch. Both are bounded.
 //
-//              and the median of a category's observations is that category's anchor. The
-//              observations span six orders of magnitude in this snapshot (0.03 to about 20,000),
-//              so the median is taken on the LOGARITHM of the observation: in linear space one
-//              very large peer would drag the middle of the distribution with it.
+//    implied = anchor x size x momentum, rounded to whole dollars.
 //
-//              A category with few observations is a thin measurement, so its anchor is blended
-//              toward the all-category median on the logarithm, in proportion to how many
-//              observations it actually has:
+// 2. What to do about it. Every row carries a farm plan derived from the protocol's own record:
+//    its category decides the action, its TVL decides the capital and its depth, its age decides
+//    the holding window and how often a qualifying action has to be repeated.
 //
-//                  trust  = k / (k + ANCHOR_SHRINKAGE_M)      k = live peers in the category
-//                  anchor = exp(trust * log(category median) + (1 - trust) * log(global median))
+// A protocol is pre-token when its index entry records no token: no market cap, no CoinGecko id and
+// no symbol. The snapshot's live-token protocols are kept apart and shown with the market's own
+// market cap, never mixed into the ranked board.
 //
-//              With one peer a category is trusted a quarter of the way and the rest of the
-//              market three quarters; with three peers it is trusted half; with fifteen, five
-//              sixths. A category with no priced peer at all uses the global median outright.
-//
-//              Because the observation divides market cap by TVL raised to the size exponent,
-//              multiplying the anchor back by TVL raised to that same exponent recovers roughly
-//              what a live peer of the same size is worth. That is why the numbers on the board
-//              read as market caps rather than as arbitrary multiples.
-//
-//    size      tvl_usd raised to size_exponent (0.75). TVL is the protocol's footprint, and a
-//              footprint ten times larger is worth more than ten times a launch, not less. The
-//              sub-linear exponent is the usual shape of that curve and it stops one whale
-//              from owning the board.
-//
-//    growth    A week of TVL movement. The snapshot records change_7d in per cent (26.3 means
-//              +26.3%), clamped to [growth_floor, growth_cap] and scaled by growth_weight:
-//
-//                  growth = 1 + weight * (clamped 7-day change in per cent) / 100
-//
-//              So at weight 0.45 a flat week scores 1.00, a +25% week scores 1.11 and the
-//              +150% cap scores 1.68; a -25% week scores 0.89. A missing 7-day reading is
-//              neither growth nor decline, so it also scores 1.
-//
-//    maturity  How long the protocol has been listed without a token. A protocol that has run
-//              for years without one is a protocol that does not intend to have one, so age
-//              lowers the estimate. The decay is logarithmic, not linear, because the first
-//              months of silence matter far more than the thousandth:
-//
-//                  decay    = min(1, ln(1 + days) / ln(1 + age_full_decay))
-//                  maturity = age_cap - (age_cap - age_floor) * decay
-//
-//              With the constants below a 30-day-old protocol scores 0.69, a one-year-old one
-//              0.47, and anything listed four years ago or longer the floor of 0.35. A protocol
-//              with no listing date is not "very old", it is "unknown", and scores
-//              unknown_age_maturity (0.7) instead of being dragged to the floor.
-//
-// 2. WHAT TO DO ABOUT IT. Every row carries a farm plan derived from the protocol's own record:
-//    its category decides the action, its TVL decides the capital and the depth, its age
-//    decides the holding window, and its week of movement decides the pace. The plan is
-//    generated by the code below, not written out by hand, so two protocols in the same
-//    category get different plans.
-//
-// A protocol is pre-token when its snapshot entry records no token at all: no market cap, no
-// CoinGecko id and no symbol. The snapshot's live-token protocols are kept apart and shown
-// with the market's own market cap; they are never mixed into the ranked board, and they are
-// also the only protocols that contribute anchor observations.
-//
-// The board's rows are every pre-token protocol worth a reader's time: the snapshot's own
-// watchlist, whatever else it is, plus every other rankable protocol whose TVL clears
-// min_tvl_usd. "Rankable" excludes products of something that already trades - wrapped,
-// staked, bridged, exchange-branded or versioned - because WBTC is Bitcoin on Ethereum and
-// Binance's staked ETH is ETH in a staking product, and neither is a protocol still waiting on
-// a launch of its own.
+// No protocol name is ever special-cased. The same function scores every row.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -109,7 +63,7 @@ export interface Snapshot {
 export interface ModelConstants {
   /** The exponent of the size curve: TVL raised to this power is the protocol's scale. */
   size_exponent: number;
-  /** How much of a week of growth carries into the estimate (the 7-day change is in per cent). */
+  /** How much of a week of growth carries into the estimate. */
   growth_weight: number;
   /** The growth term's bounds, in per cent of TVL. */
   growth_floor: number;
@@ -117,10 +71,10 @@ export interface ModelConstants {
   /** The maturity term's bounds: a protocol this old without a token is not going to issue one. */
   age_floor: number;
   age_cap: number;
-  /** Age in days at which the maturity term reaches its floor. */
+  /** Age in days at which the maturity term is at its floor. */
   age_full_decay: number;
-  /** The maturity value an unknown-age protocol gets, instead of being penalised as very old. */
-  unknown_age_maturity: number;
+  /** The age used when the snapshot records no listing date. */
+  unknown_age_days: number;
   /** TVL below which a protocol is not a launch candidate worth a reader's time. */
   min_tvl_usd: number;
 }
@@ -133,35 +87,17 @@ export const MODEL: ModelConstants = {
   age_floor: 0.35,
   age_cap: 1.0,
   age_full_decay: 1460,
-  unknown_age_maturity: 0.7,
+  unknown_age_days: 540,
   min_tvl_usd: 5_000_000,
 };
 
-/**
- * The model's version label: the dashboard names it and the rules quote it. It names the
- * valuation arithmetic - anchor, size, growth, maturity - which is what a reader has to be able
- * to reproduce, not which protocols the board chooses to carry.
- */
-export const MODEL_VERSION = 'radar-3';
+/** The model's version label: the dashboard names it and the rules quote it. */
+export const MODEL_VERSION = 'radar-2';
 
-/**
- * The shrinkage prior for a category's anchor, in "equivalent peers": with k live peers in a
- * category the category's own median is trusted k/(k + m) of the way and the all-category
- * median m/(k + m) of the way. With m = 3 a single-observation category is trusted a quarter
- * and the rest of the market three quarters; a category with fifteen peers is trusted five
- * sixths. The blend happens on the logarithm, so a thin category is pulled back toward the
- * market rather than allowed to dominate it.
- */
-export const ANCHOR_SHRINKAGE_M = 3;
-
-/**
- * How many protocols the scan may add to the board on top of the watchlist, strongest first.
- * The cap is a safety limit on the snapshot's size, not a ranking rule: the board is ordered
- * by implied value, so what the cap drops would be the weakest rows anyway.
- */
+/** How many pre-token protocols below the watchlist floor the early radar carries, by TVL. */
 export const EARLY_ROWS = 160;
 
-/** How many live-token protocols the "Already trading" view carries, by market cap. */
+/** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
 
 /** A farm step: the action, what it costs, and how long it takes. */
@@ -243,12 +179,7 @@ export interface RadarData {
   model_version: string;
   watchlist_size: number;
   board_size: number;
-  /** Rows the scan added on top of the watchlist. */
   early_size: number;
-  /** Of those, the ones whose TVL is below the snapshot's watchlist floor. */
-  found_below_floor: number;
-  /** Of those, the ones whose TVL is at or above the floor but which the watchlist omits. */
-  found_above_floor: number;
   live_size: number;
   global_anchor: number;
   anchors: Record<string, { fdv_tvl: number; peers: number }>;
@@ -273,11 +204,7 @@ function finite(value: unknown, fallback: number): number {
 
 const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
 
-/**
- * A whole day count from the listing date to the snapshot's date, never negative; null when
- * either date is missing or unparseable. Both dates are read as UTC midnights, so the count
- * does not drift with the time of day the snapshot was taken.
- */
+/** A whole day count from `from` to `to`, clamped at zero; null when either date is absent or bad. */
 export function ageDays(asOf: string, listedAt: string | null): number | null {
   if (listedAt === null) return null;
   const a = Date.parse(`${asOf}T00:00:00Z`);
@@ -304,7 +231,7 @@ const DERIVATIVE_CATEGORIES = new Set([
 ]);
 
 /** A name carrying one of these whole words is a product of something that already trades. */
-const DERIVATIVE_WORD = /\b(wrapped|staked|staking)\b/i;
+const DERIVATIVE_WORD = /\b(wrapped|staked|staking|staked)\b/i;
 
 /** An exchange's own name at the front of a protocol's name: the exchange's product, not a protocol. */
 const EXCHANGE_NAMES = ['Binance', 'Coinbase', 'Bybit', 'Kraken', 'Bitget', 'OKX', 'Bitfinex', 'Gemini'];
@@ -338,27 +265,13 @@ function median(values: number[]): number | null {
 }
 
 /**
- * The anchors: for each category, the constant that converts a protocol's size into the value
- * its live-token peers command. A protocol with a token has a price the market set; the
- * pre-token protocols in the same category have not, so their peers are the best available
- * estimate of what one would fetch. Each live peer contributes one observation - market cap over
- * TVL to the power of the model's size exponent - and the median of a category's observations
- * is that category's constant.
- *
- * Two things make this robust rather than merely arithmetic:
- *
- * - A peer whose market cap the snapshot records as zero or negative is not a priced peer - the
- *   field is simply not filled in - so it contributes no observation at all. Including it would
- *   drag a category's median toward zero and read as "this category is worth nothing". A peer
- *   with no TVL cannot be divided, so it is left out for the same reason.
- *
- * - The observations are worked in log space. They span six orders of magnitude across the
- *   snapshot (0.03 to about 20,000), so a median in linear space is pulled by whichever peers
- *   sit at the top, and the shrink toward the global median has to be done on the logarithm for
- *   a single thin category to be pulled back rather than to dominate.
- *
- * A protocol whose market cap the snapshot records but whose category is CEX is left out too:
- * an exchange's balance sheet is not a comparable observation for a protocol's launch.
+ * The anchors: for each category, the constant that converts a protocol's TVL into the value its
+ * live-token peers command. A protocol with a token has a price the market set; the pre-token
+ * protocols in the same category have not, so their peers are the best available estimate of what
+ * one would fetch. Each live peer contributes one observation, market cap over TVL to the power of
+ * the model's size exponent, and the median of those observations in a category is the category's
+ * constant. A category with fewer than three live observations falls back to the all-category
+ * median, and the board says which anchor each row used.
  */
 export function buildAnchors(
   snapshot: Snapshot,
@@ -367,49 +280,35 @@ export function buildAnchors(
   const byCat = new Map<string, number[]>();
   const all: number[] = [];
   for (const p of snapshot.protocols) {
-    if (p.mcap_usd === null || p.mcap_usd <= 0 || p.tvl_usd <= 0) continue;
+    if (p.mcap_usd === null || p.tvl_usd <= 0) continue;
     if (p.category === 'CEX') continue;
     const ratio = p.mcap_usd / Math.pow(p.tvl_usd, model.size_exponent);
-    const logRatio = Math.log(ratio);
-    all.push(logRatio);
+    all.push(ratio);
     const key = p.category ?? '(none)';
     const list = byCat.get(key);
-    if (list === undefined) byCat.set(key, [logRatio]);
-    else list.push(logRatio);
+    if (list === undefined) byCat.set(key, [ratio]);
+    else list.push(ratio);
   }
-  // The all-category median is the fallback every thinner category is shrunk toward.
-  const globalLog = median(all) ?? Math.log(14);
+  const global = median(all) ?? 14;
   const byCategory: Record<string, { fdv_tvl: number; peers: number }> = {};
   for (const [key, list] of byCat) {
     const med = median(list);
     if (med === null) continue;
-    byCategory[key] = { fdv_tvl: round4(Math.exp(med)), peers: list.length };
+    byCategory[key] = { fdv_tvl: round4(med), peers: list.length };
   }
-  return { global: round4(Math.exp(globalLog)), byCategory };
+  return { global: round4(global), byCategory };
 }
 
-/**
- * The anchor a category uses: its own median, shrunk toward the global median by how many live
- * peers it actually has. With k peers, trust = k / (k + ANCHOR_SHRINKAGE_M): a category with
- * many peers trusts its own median; a category with a single observation trusts it only a
- * quarter and the global figure three quarters. The blend happens on the logarithm, so a thin
- * category is pulled back toward the market rather than dominating it. This keeps a lone unusual
- * live protocol from owning a whole category's anchor, while not throwing away data from
- * categories that do have real peers.
- */
+/** The anchor a category uses: its own median when it has enough live peers, else the global one. */
 export function anchorFor(
   category: string | null,
   anchors: { global: number; byCategory: Record<string, { fdv_tvl: number; peers: number }> },
+  minPeers = 3,
 ): { fdv_tvl: number; peers: number; scope: 'category' | 'global' } {
   const key = category ?? '(none)';
   const own = anchors.byCategory[key];
-  if (own === undefined || own.peers === 0) return { fdv_tvl: anchors.global, peers: 0, scope: 'global' };
-  const k = own.peers;
-  const trust = k / (k + ANCHOR_SHRINKAGE_M);
-  const globalLog = Math.log(anchors.global);
-  const ownLog = Math.log(own.fdv_tvl);
-  const fdv_tvl = round4(Math.exp(ownLog * trust + globalLog * (1 - trust)));
-  return { fdv_tvl, peers: k, scope: 'category' };
+  if (own !== undefined && own.peers >= minPeers) return { fdv_tvl: own.fdv_tvl, peers: own.peers, scope: 'category' };
+  return { fdv_tvl: anchors.global, peers: 0, scope: 'global' };
 }
 
 /** The three multipliers and the implied value one protocol gets under `model`. */
@@ -434,27 +333,15 @@ export function impliedValue(
   // never in proportion: a whale cannot own the board by size alone.
   const sizeFactor = Math.pow(Math.max(protocol.tvl_usd, 0), model.size_exponent);
 
-  // Growth: a week of growth lifts the estimate, a week of decline lowers it, both bounded. The
-  // snapshot's change_7d is in per cent, so it is divided by 100 before it is weighted. A
-  // missing reading is neither growth nor decline, so it scores the neutral multiplier of 1.
+  // Momentum: a week of growth lifts the estimate, a week of decline lowers it, both bounded.
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
 
-  // Maturity: a protocol listed long ago and still without a token is not going to issue one,
-  // but the decay is logarithmic, not linear - the first few months of silence matter far more
-  // than the thousandth month. A 30-day protocol is 0.69, a year is 0.47, and four years is the
-  // floor of 0.35. An unknown listing date is not "very old"; it is "unknown", and gets its
-  // own neutral 0.70 instead of being dragged to the floor.
-  let maturityMult: number;
-  if (age === null) {
-    maturityMult = model.unknown_age_maturity;
-  } else {
-    const ln = Math.log1p(age);
-    const lnFull = Math.log1p(model.age_full_decay);
-    const decay = Math.min(1, ln / lnFull);
-    maturityMult = model.age_cap - (model.age_cap - model.age_floor) * decay;
-  }
+  // Maturity: a protocol listed long ago and still without a token is not going to issue one.
+  const ageForModel = age ?? model.unknown_age_days;
+  const decay = Math.min(1, ageForModel / model.age_full_decay);
+  const maturityMult = model.age_cap - (model.age_cap - model.age_floor) * decay;
 
   const implied = Math.max(1, Math.round(anchor.fdv_tvl * sizeFactor * growthMult * maturityMult));
   return { implied, anchor, sizeFactor, growthPct, growthMult, maturityMult, age };
@@ -465,16 +352,7 @@ function bySlug(protocols: SnapshotProtocol[]): Map<string, SnapshotProtocol> {
   return new Map(protocols.map((p) => [p.slug, p]));
 }
 
-/**
- * The protocols the board ranks, strongest first, with ranks 1..n.
- *
- * The watchlist is the floor: every slug on it is carried, even one the snapshot no longer
- * lists, and even one that would otherwise be filtered out as a derivative of something that
- * already trades. The scan adds every other rankable protocol whose TVL clears min_tvl_usd -
- * including the ones above the snapshot's floor, which the watchlist does not mention but which
- * are just as much launch candidates - and the whole set is then ordered by implied value, so
- * what the board ranks by is what it selects by.
- */
+/** The protocols the board ranks, strongest first, with ranks 1..n. */
 export function buildBoard(
   snapshot: Snapshot,
   model: ModelConstants = MODEL,
@@ -487,28 +365,20 @@ export function buildBoard(
     const p = index.get(slug);
     if (p !== undefined) chosen.set(slug, p);
   }
-  // The scan: every other protocol that records no token, is a protocol in its own right, and
-  // is deep enough to be worth a reader's time. Ordered by implied value, so the cap keeps the
-  // rows that carry the board and drops the weakest.
-  const scored = new Map<string, ReturnType<typeof impliedValue>>();
-  const candidates = snapshot.protocols
-    .filter((p) => !chosen.has(p.slug) && isRankable(p) && p.tvl_usd >= model.min_tvl_usd)
-    .map((p) => {
-      const parts = impliedValue(p, snapshot.as_of, model, anchors);
-      return { p, parts };
-    })
-    .sort((a, b) => b.parts.implied - a.parts.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
-  for (const c of candidates.slice(0, EARLY_ROWS)) {
-    chosen.set(c.p.slug, c.p);
-    scored.set(c.p.slug, c.parts);
-  }
+  // The early radar: pre-token protocols below the watchlist floor, by TVL, capped. Never a
+  // replacement for a watchlist row: a chosen protocol stays chosen.
+  const early = snapshot.protocols
+    .filter((p) => !chosen.has(p.slug) && isRankable(p) && p.tvl_usd < snapshot.floor_usd && p.tvl_usd >= model.min_tvl_usd)
+    .sort((a, b) => b.tvl_usd - a.tvl_usd || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0))
+    .slice(0, EARLY_ROWS);
+  for (const p of early) chosen.set(p.slug, p);
 
-  const rows = [...chosen.values()].map((p) => {
-    const s = scored.get(p.slug) ?? impliedValue(p, snapshot.as_of, model, anchors);
-    return { p, ...s };
+  const scored = [...chosen.values()].map((p) => {
+    const parts = impliedValue(p, snapshot.as_of, model, anchors);
+    return { p, ...parts };
   });
-  rows.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
-  return rows.map((s, i) => ({
+  scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
+  return scored.map((s, i) => ({
     rank: i + 1,
     slug: s.p.slug,
     name: s.p.name,
@@ -566,14 +436,6 @@ function holdDaysFor(age: number | null): number {
   return 30;
 }
 
-/** A compact USD figure for a TVL, so a step can say how deep the pool is. */
-function tvlDepth(tvl: number): string {
-  if (tvl >= 1_000_000_000_000) return `$${(tvl / 1e12).toFixed(1)}T`;
-  if (tvl >= 1_000_000_000) return `$${(tvl / 1e9).toFixed(1)}B`;
-  if (tvl >= 1_000_000) return `$${(tvl / 1e6).toFixed(1)}M`;
-  return `$${Math.round(tvl / 1e3)}K`;
-}
-
 /** The category's one action, in the words a farmer can follow. */
 function actionFor(p: SnapshotProtocol, capital: number, chain: string): string {
   const c = (p.category ?? '').toLowerCase();
@@ -591,74 +453,50 @@ function actionFor(p: SnapshotProtocol, capital: number, chain: string): string 
   return `Deposit $${capital} of USDC into ${name} on ${chain} and keep the position open.`;
 }
 
-/** What a week of TVL movement means for the pace of a farm: accelerate, hold, or wait and see. */
-function momentumLine(change: number | null, tvl: number): string {
-  if (change === null) return `with no seven-day reading yet, treat the position as a probe: add only after the next snapshot confirms the direction.`;
-  if (change >= 25) return `a ${change.toFixed(0)}% week means the crowd is already moving — this is the one to front-run, so keep the position topped up and re-check it weekly.`;
-  if (change >= 5) return `a ${change.toFixed(0)}% week is steady; keep the position and add once more before the next snapshot.`;
-  if (change >= -5) return `a flat week (${change.toFixed(1)}%) means the base is stable; keep the position without adding until the next reading.`;
-  if (change >= -20) return `a ${change.toFixed(0)}% week is a mild bleed; keep the position but do not add until it turns.`;
-  return `a ${change.toFixed(0)}% week against a ${tvlDepth(tvl)} pool is a real drop; hold for now and only re-enter if two straight weeks turn positive.`;
-}
-
 /**
- * A protocol's farm plan: eight steps, each an action with a cost and a time, derived from the
- * protocol's own record - its chains, its TVL depth, its week of movement, and how long it has
- * run without a token. No hand-written list of names: the same code reads the snapshot's figures
- * and writes the plan.
+ * A protocol's farm plan: six steps, each an action with a cost and a time. The plan is derived from
+ * the protocol's own record (category, chains, TVL, age), never from a hand-written list of names.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const chain = chainOf(p);
   const capital = capitalFor(p);
   const hold = holdDaysFor(age);
   const action = actionFor(p, capital, chain);
-  const gas = capital >= 150 ? 8 : 4;
-  const all = p.chains;
-  // A protocol on forty-five chains does not need forty-five names in one sentence: the count is
-  // the fact that matters, and a short list beside it is enough to act on.
-  const named = all.length > 5 ? `${all.slice(0, 5).join(', ')} and ${all.length - 5} more` : all.join(', ');
-  const cross = all.length > 1
-    ? `It records ${all.length} chains — ${named} — so mirror the position on a second one, starting with ${chain} and adding ${all[1]!}, to make sure the launch is not read off a single chain's books.`
-    : `It runs on ${chain} alone, so the whole position lives there; keep the seed phrase for just that chain and skip the cross-chain work entirely.`;
-  const depth = `Its TVL of ${tvlDepth(p.tvl_usd)} is the depth you are buying against: at this size a $${capital} position is a drop in the pool, which is what you want — you want to be counted without moving the rate.`;
-  const momentum = momentumLine(p.change_7d, p.tvl_usd);
-  const ageLine = age === null
-    ? `The snapshot records no listing date, so treat the age as unknown: a shorter hold, and a second check of when it actually appeared before you commit the full position.`
-    : `It has been listed ${age} days — about ${Math.max(1, Math.round(age / 30))} months — without a token, which is why the model's own maturity term holds its value down, and the plan's job is to keep the position while that timer runs.`;
-  const steps: FarmStep[] = [
+  return [
     {
-      text: `Use a fresh wallet that holds only the $${capital} you plan to farm on ${chain}, and keep its seed phrase offline.`,
-      cost: `under $${gas} of gas for the first transaction on ${chain}`,
+      text: `Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.`,
+      cost: 'under $3 of gas for the first transaction',
       time: '5 minutes',
     },
-    { text: action, cost: `$${capital} of capital and about $${gas} of gas`, time: '15 minutes to set up' },
-    { text: cross, cost: 'one bridged or native transfer, about $4 of gas', time: '10 minutes' },
-    { text: `Read the pool against its depth: ${depth}`, cost: 'nothing to read', time: '5 minutes' },
     {
-      text: `Set your pace from the week of movement: ${momentum}`,
-      cost: 'the decision is free, the added capital is not',
+      text: action,
+      cost: `$${capital} of capital and about $${capital >= 150 ? 8 : 4} of gas`,
+      time: '15 minutes to set up',
+    },
+    {
+      text: `Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.`,
+      cost: 'about $2 of gas a week',
       time: '10 minutes a week',
     },
     {
-      text: `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot. ${ageLine}`,
+      text: `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot.`,
       cost: `the $${capital} stays in the position`,
       time: `${hold} days`,
     },
     {
-      text: `Before you withdraw from ${p.name}, open the protocol's own points or rewards page and claim only from the link it publishes.`,
+      text: `Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.`,
       cost: 'no fee to check, and never pay to claim',
       time: '10 minutes',
     },
     {
-      text: `Write the wallet, the dates and every transaction on ${chain} in a farm log, so you can repeat the position or unwind it.`,
+      text: `Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.`,
       cost: 'nothing but the log',
       time: '5 minutes',
     },
   ];
-  return steps;
 }
 
-/** The live-token protocols, by market cap, for the dashboard's "Already trading" view. */
+/** The live-token protocols, by market cap, for the dashboard's Live token view. */
 export function liveRows(snapshot: Snapshot): LiveRow[] {
   return snapshot.protocols
     .filter((p) => !isPreToken(p) && p.category !== 'CEX')
@@ -709,7 +547,7 @@ export function buildRadar(
   const board = buildBoard(snapshot, model, anchors);
   const live = liveRows(snapshot);
   const watchSet = new Set(snapshot.watchlist);
-  const found = board.filter((r) => !watchSet.has(r.slug));
+  const early = board.filter((r) => !watchSet.has(r.slug)).length;
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -718,9 +556,7 @@ export function buildRadar(
     model_version: MODEL_VERSION,
     watchlist_size: snapshot.watchlist.length,
     board_size: board.length,
-    early_size: found.length,
-    found_below_floor: found.filter((r) => r.tvl_usd < snapshot.floor_usd).length,
-    found_above_floor: found.filter((r) => r.tvl_usd >= snapshot.floor_usd).length,
+    early_size: early,
     live_size: live.length,
     global_anchor: anchors.global,
     anchors: anchors.byCategory,

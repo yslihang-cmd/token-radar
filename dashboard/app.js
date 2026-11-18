@@ -45,24 +45,16 @@
     var growth = row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d;
     growth = Math.min(model.growth_cap, Math.max(model.growth_floor, growth));
     var growthMult = 1 + (growth / 100) * model.growth_weight;
-    var maturityMult;
-    if (row.age_days === null || row.age_days === undefined) {
-      maturityMult = model.unknown_age_maturity;
-    } else {
-      var ln = Math.log1p(row.age_days);
-      var lnFull = Math.log1p(model.age_full_decay);
-      var decay = Math.min(1, ln / lnFull);
-      maturityMult = model.age_cap - (model.age_cap - model.age_floor) * decay;
-    }
+    var age = row.age_days === null || row.age_days === undefined ? model.unknown_age_days : row.age_days;
+    var decay = Math.min(1, age / model.age_full_decay);
+    var maturityMult = model.age_cap - (model.age_cap - model.age_floor) * decay;
     var sizeFactor = Math.pow(Math.max(row.tvl_usd, 0), model.size_exponent);
     var anchor = row.anchor_fdv_tvl;
     var implied = Math.max(1, Math.round(anchor * sizeFactor * growthMult * maturityMult));
     return { implied: implied, anchor: anchor, sizeFactor: sizeFactor, growthMult: growthMult, maturityMult: maturityMult };
   }
 
-  /* ---------- farm plan, generated the same way the model generates it ----------
-     Each step is derived from this protocol's own record — its chains, its TVL depth, its week of
-     movement, and how long it has run without a token — the same code lib/model.ts runs. */
+  /* ---------- farm plan, generated the same way the model generates it ---------- */
   function chainOf(p) { return p.chains && p.chains.length > 0 ? p.chains[0] : 'its main chain'; }
   function capitalFor(p) {
     if (p.tvl_usd >= 5e9) return 250;
@@ -75,12 +67,6 @@
     if (age < 180) return 60;
     if (age < 365) return 45;
     return 30;
-  }
-  function tvlDepth(tvl) {
-    if (tvl >= 1e12) return '$' + (tvl / 1e12).toFixed(1) + 'T';
-    if (tvl >= 1e9) return '$' + (tvl / 1e9).toFixed(1) + 'B';
-    if (tvl >= 1e6) return '$' + (tvl / 1e6).toFixed(1) + 'M';
-    return '$' + Math.round(tvl / 1e3) + 'K';
   }
   function actionFor(p, capital, chain) {
     var c = (p.category || '').toLowerCase();
@@ -97,39 +83,17 @@
     if (c.indexOf('insurance') >= 0) return 'Buy $' + capital + ' of cover from ' + name + ' on ' + chain + ' and keep the policy.';
     return 'Deposit $' + capital + ' of USDC into ' + name + ' on ' + chain + ' and keep the position open.';
   }
-  function momentumLine(change, tvl) {
-    if (change === null) return 'with no seven-day reading yet, treat the position as a probe: add only after the next snapshot confirms the direction.';
-    if (change >= 25) return 'a ' + change.toFixed(0) + '% week means the crowd is already moving — this is the one to front-run, so keep the position topped up and re-check it weekly.';
-    if (change >= 5) return 'a ' + change.toFixed(0) + '% week is steady; keep the position and add once more before the next snapshot.';
-    if (change >= -5) return 'a flat week (' + change.toFixed(1) + '%) means the base is stable; keep the position without adding until the next reading.';
-    if (change >= -20) return 'a ' + change.toFixed(0) + '% week is a mild bleed; keep the position but do not add until it turns.';
-    return 'a ' + change.toFixed(0) + '% week against a ' + tvlDepth(tvl) + ' pool is a real drop; hold for now and only re-enter if two straight weeks turn positive.';
-  }
   function farmSteps(p) {
     var chain = chainOf(p);
     var capital = capitalFor(p);
     var hold = holdDaysFor(p.age_days);
-    var action = actionFor(p, capital, chain);
-    var gas = capital >= 150 ? 8 : 4;
-    var all = p.chains || [];
-    var named = all.length > 5 ? all.slice(0, 5).join(', ') + ' and ' + (all.length - 5) + ' more' : all.join(', ');
-    var cross = all.length > 1
-      ? "It records " + all.length + ' chains — ' + named + ' — so mirror the position on a second one, starting with ' + chain + ' and adding ' + all[1] + ", to make sure the launch is not read off a single chain's books."
-      : 'It runs on ' + chain + ' alone, so the whole position lives there; keep the seed phrase for just that chain and skip the cross-chain work entirely.';
-    var depth = 'Its TVL of ' + tvlDepth(p.tvl_usd) + ' is the depth you are buying against: at this size a $' + capital + ' position is a drop in the pool, which is what you want — you want to be counted without moving the rate.';
-    var momentum = momentumLine(p.change_7d, p.tvl_usd);
-    var ageLine = p.age_days === null || p.age_days === undefined
-      ? 'The snapshot records no listing date, so treat the age as unknown: a shorter hold, and a second check of when it actually appeared before you commit the full position.'
-      : "It has been listed " + p.age_days + ' days — about ' + Math.max(1, Math.round(p.age_days / 30)) + " months — without a token, which is why the model's own maturity term holds its value down, and the plan's job is to keep the position while that timer runs.";
     return [
-      { text: 'Use a fresh wallet that holds only the $' + capital + ' you plan to farm on ' + chain + ', and keep its seed phrase offline.', cost: 'under $' + gas + ' of gas for the first transaction on ' + chain, time: '5 minutes' },
-      { text: action, cost: '$' + capital + ' of capital and about $' + gas + ' of gas', time: '15 minutes to set up' },
-      { text: cross, cost: 'one bridged or native transfer, about $4 of gas', time: '10 minutes' },
-      { text: 'Read the pool against its depth: ' + depth, cost: 'nothing to read', time: '5 minutes' },
-      { text: 'Set your pace from the week of movement: ' + momentum, cost: 'the decision is free, the added capital is not', time: '10 minutes a week' },
-      { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot. ' + ageLine, cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
-      { text: "Before you withdraw from " + p.name + ", open the protocol's own points or rewards page and claim only from the link it publishes.", cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
-      { text: 'Write the wallet, the dates and every transaction on ' + chain + ' in a farm log, so you can repeat the position or unwind it.', cost: 'nothing but the log', time: '5 minutes' }
+      { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.', cost: 'under $3 of gas for the first transaction', time: '5 minutes' },
+      { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital and about $' + (capital >= 150 ? 8 : 4) + ' of gas', time: '15 minutes to set up' },
+      { text: 'Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.', cost: 'about $2 of gas a week', time: '10 minutes a week' },
+      { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
+      { text: "Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.", cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
+      { text: 'Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.', cost: 'nothing but the log', time: '5 minutes' }
     ];
   }
 
@@ -201,7 +165,7 @@
       el('div', { class: 'stat accent' },
         el('div', { class: 'k', text: 'Launch candidates' }),
         el('div', { class: 'v', html: total + '<small>ranked</small>' }),
-        el('div', { class: 'n', text: watch + ' on the house watchlist, ' + early + ' more found by the scan' })),
+        el('div', { class: 'n', text: watch + ' on the house watchlist, ' + early + ' found below its floor' })),
       el('div', { class: 'stat' },
         el('div', { class: 'k', text: 'Implied value, top 20' }),
         el('div', { class: 'v', html: fmtUsd(sum) }),
@@ -209,7 +173,7 @@
       el('div', { class: 'stat' },
         el('div', { class: 'k', text: 'Category anchor' }),
         el('div', { class: 'v', html: DATA.global_anchor.toFixed(1) + '<small>anchor</small>' }),
-        el('div', { class: 'n', text: 'the all-category median multiple, the anchor’s own fallback' })),
+        el('div', { class: 'n', text: 'median multiple of the snapshot live-token protocols' })),
       el('div', { class: 'stat' },
         el('div', { class: 'k', text: 'Already trading' }),
         el('div', { class: 'v', html: DATA.live_size + '<small>live</small>' }),
@@ -219,11 +183,11 @@
     formula.innerHTML =
       '<span class="term">implied_value</span> = <span class="term2">anchor</span> × <span class="term">TVL</span><sup>' + DATA.model.size_exponent + '</sup> × <span class="term2">growth</span> × <span class="term">maturity</span>' +
       '<br>' +
-      '<span class="term2">anchor</span> = median of (market cap ÷ TVL<sup>' + DATA.model.size_exponent + '</sup>) over this protocol’s own live peers, blended on the logarithm with the all-category median (' + DATA.global_anchor.toFixed(2) + '): with k live peers, trust = k ÷ (k + 3)' +
+      '<span class="term2">anchor</span> = median market cap ÷ TVL<sup>' + DATA.model.size_exponent + '</sup> of the live-token protocols in this protocol’s own category (fallback: all-category median ' + DATA.global_anchor.toFixed(2) + ')' +
       '<br>' +
-      '<span class="term">growth</span> = 1 + ' + DATA.model.growth_weight + ' × (7d TVL change ÷ 100), clamped to [' + DATA.model.growth_floor + '%, ' + DATA.model.growth_cap + '%]' +
+      '<span class="term">growth</span> = 1 + ' + DATA.model.growth_weight + ' × 7d TVL change, clamped to [' + DATA.model.growth_floor + '%, ' + DATA.model.growth_cap + '%]' +
       '<br>' +
-      '<span class="term">maturity</span> = ' + DATA.model.age_cap + ' − ' + (DATA.model.age_cap - DATA.model.age_floor) + ' × ln(1 + days) ÷ ln(1 + ' + DATA.model.age_full_decay + '); unknown listing date → ' + DATA.model.unknown_age_maturity + ' &nbsp;&nbsp;·&nbsp;&nbsp; no protocol name is special-cased';
+      '<span class="term">maturity</span> = ' + DATA.model.age_cap + ' − ' + (DATA.model.age_cap - DATA.model.age_floor) + ' × min(1, days listed ÷ ' + DATA.model.age_full_decay + ') &nbsp;&nbsp;·&nbsp;&nbsp; no protocol name is special-cased';
 
     var card = el('section', { class: 'model-card' },
       el('header', null,
@@ -232,9 +196,8 @@
       formula,
       el('p', { class: 'note', html:
         'Every figure comes from the sealed snapshot itself: <b>TVL</b>, the <b>seven-day TVL change</b>, <b>days listed</b>, the <b>category</b> and the <b>chains</b> a protocol records. ' +
-        'The anchor is read out of the same file: each protocol that <b>already has a token</b> and a real market cap contributes one observation of market cap over TVL raised to the size exponent, and the median of those observations in a category is what a protocol of that category would be worth if it issued one. ' +
-        'When a category has only a handful of live peers, that median is a thin number, so it is <b>blended on the logarithm with the all-category median</b>, in proportion to how many peers it actually has — one observation trusts the category a quarter and the rest of the market three quarters. ' +
-        'Growth lifts a launch that is close; age lowers one that has clearly been decided against, on a logarithmic curve so the first months of silence count far more than the thousandth. Nothing in the model reads a protocol’s name.' }));
+        'The anchor is read out of the same file: each protocol that <b>already has a token</b> contributes one observation of market cap over TVL, and the median of those observations in a category is what a protocol of that category would be worth if it issued one. ' +
+        'Growth lifts a launch that is close; age lowers one that has clearly been decided against. Nothing in the model reads a protocol’s name.' }));
 
     return el('header', { class: 'masthead' },
       el('div', { class: 'masthead-top' },
@@ -338,9 +301,9 @@
 
       var scopeLabel = r.anchor_scope === 'category' ? 'category' : 'global';
       var scopeTip = r.anchor_scope === 'category'
-        ? 'Anchored to the median of (market cap ÷ TVL^' + DATA.model.size_exponent + ') over ' + r.anchor_peers + ' live peers in this protocol’s own category, blended on the logarithm with the all-category median by how thin that sample is'
-        : 'Anchored to the all-category median of (market cap ÷ TVL^' + DATA.model.size_exponent + ') — no priced live peers are recorded in this category';
-      tr.appendChild(el('td', { class: 'num dim anchor-scope scope-' + r.anchor_scope, title: scopeTip, text: scopeLabel }));
+        ? 'Anchored to the median FDV/TVL of live peers in this protocol\'s own category'
+        : 'Anchored to the all-category median FDV/TVL (fallback when a category has too few live peers)';
+      tr.appendChild(el('td', { class: 'num dim anchor-scope', title: scopeTip, text: scopeLabel }));
 
       var bar = el('div', { class: 'bar' }, el('i', { style: 'width:' + Math.max(2, Math.round((r.implied_value_usd / max) * 100)) + '%' }));
       tr.appendChild(el('td', null, el('div', { class: 'value', text: fmtUsd(r.implied_value_usd) }), bar));
@@ -372,7 +335,7 @@
         el('td', { class: 'num ' + (r.change_7d === null ? 'dim' : r.change_7d >= 0 ? 'pos' : 'neg'), text: fmtPct(r.change_7d) })));
     });
     return el('div', null,
-      el('p', { class: 'live-note', html: 'These protocols <b>already have a token</b>: their value is the market’s, not the model’s. They are listed apart from the board, and their market cap over TVL is what the board’s anchor is measured against — the anchor reads each live peer’s market cap over its own size, then takes the median of those observations in a category.' }),
+      el('p', { class: 'live-note', html: 'These protocols <b>already have a token</b>: their value is the market’s, not the model’s. They are listed apart from the board, and their market cap over TVL is what the board’s anchor is measured against.' }),
       el('div', { class: 'board' }, el('table', null, thead, tbody)));
   }
 
@@ -391,19 +354,17 @@
       el('dt', { text: 'Token recorded' }), el('dd', { text: 'none — no market cap, no CoinGecko id, no symbol' }));
 
     var calcBox = el('div', { class: 'calc' },
-      el('div', { class: 'line' }, el('span', { text: 'anchor (' + row.anchor_scope + ')' }), el('b', { text: row.anchor_fdv_tvl.toFixed(2) + (row.anchor_scope === 'category' ? ' from ' + row.anchor_peers + ' live peers' : ' all-category median') })),
+      el('div', { class: 'line' }, el('span', { text: 'anchor (' + row.anchor_scope + ')' }), el('b', { text: row.anchor_fdv_tvl.toFixed(2) + (row.anchor_scope === 'category' ? ' from ' + row.anchor_peers + ' live peers' : ' median') })),
       el('div', { class: 'line' }, el('span', { text: 'size (TVL^' + DATA.model.size_exponent + ')' }), el('b', { text: calc.sizeFactor.toExponential(2) })),
       el('div', { class: 'line' }, el('span', { text: 'growth (7d TVL change)' }), el('b', { text: calc.growthMult.toFixed(4) })),
-      el('div', { class: 'line' }, el('span', { text: row.age_days === null ? 'maturity (unknown listing date)' : 'maturity (' + row.age_days + ' days listed)' }), el('b', { text: calc.maturityMult.toFixed(4) })),
+      el('div', { class: 'line' }, el('span', { text: 'maturity (days listed)' }), el('b', { text: calc.maturityMult.toFixed(4) })),
       el('div', { class: 'line total' }, el('span', { text: 'implied value' }), el('b', { text: fmtUsd(calc.implied) })));
 
     var stepList = el('ol', { class: 'steps' });
     steps.forEach(function (s) {
-      // The cost and the time read as the model's own sentence, so the page shows the same string
-      // board.json carries for this step: "action Cost: cost. Time: time."
       stepList.appendChild(el('li', null,
-        el('span', { text: s.text + ' Cost: ' }),
-        el('span', { class: 'meta', html: '<span class="cost">' + esc(s.cost) + '</span>. Time: ' + esc(s.time) })));
+        el('span', { text: s.text }),
+        el('span', { class: 'meta', html: '<span class="cost">' + esc(s.cost) + '</span> · ' + esc(s.time) })));
     });
 
     var head = el('header', null,

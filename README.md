@@ -1,7 +1,3 @@
-[![make.fun · token-radar-01](https://make.fun/badge/token-radar-01.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
-[![rank](https://make.fun/badge/token-radar-01/yslihang-cmd/token-radar/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
-[![reward](https://make.fun/badge/token-radar-01/yslihang-cmd/token-radar/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
-
 # Token Radar
 
 A launch radar for protocols that still have no token of their own. It reads a sealed DefiLlama
@@ -30,16 +26,7 @@ Then validate locally:
 node tools/check-gate.mjs out input/snapshot.json
 ```
 
-Eight checks: board file, sort order, coverage, farm steps, the page agreeing with the board,
-dashboard files, screenshots, dossier.
-
-The page-agreement check opens the built dashboard in a real browser, reads every row's farm plan
-out of the rendered DOM, and compares it with the string `board.json` carries — the screenshots and
-the code have to tell the same story. The same comparison without a browser:
-
-```sh
-node tools/check-parity.mjs out
-```
+Seven checks: board file, sort order, coverage, farm steps, dashboard files, screenshots, dossier.
 
 Regenerate screenshots (requires a running Chrome/Chromium with a debug port, or the script's own
 headless instance):
@@ -51,26 +38,12 @@ bash tools/screenshots.sh out screenshots
 ## The model
 
 Every protocol on the board gets an implied value — what a launch would be worth if the protocol's
-record stayed as it is. The model has four factors, all read out of the snapshot itself. The page
-names the version it runs (`radar-3`), and the dashboard recomputes the same arithmetic in the
-browser so a reader can check any number against the figures it came from:
+record stayed as it is. The model has four factors, all read out of the snapshot itself:
 
-1. **Anchor** — `anchor_fdv_tvl`, a multiple of TVL the model applies to each protocol. It starts
-   as the median market-cap-over-TV L of the live-token protocols in that protocol's own category.
-   Two things keep that median honest:
-
-   - A live peer whose market cap the snapshot records as zero or negative is not a priced peer —
-     the field is simply not filled in — so it contributes no observation at all. Including it
-     would drag a category's median toward zero and read as "this category is worth nothing".
-   - The ratios are worked **on the logarithm**, because FDV/TVL spans three orders of magnitude
-     across the snapshot. A median taken in linear space is pulled by whichever peers sit at the
-     top, and so is the blend below.
-
-   The category's median is then **blended with the all-category median** in proportion to how many
-   live peers it actually has: with `k` peers it trusts its own median `k/(k + 3)` of the way and
-   the global median `3/(k + 3)` of the way. A category with fifteen live peers is nearly pure
-   category; one with a single observation leans three-quarters of the way back to the all-category
-   figure. This is the single biggest determinant of the number.
+1. **Anchor** — `anchor_fdv_tvl`, a multiple of TVL the model applies to each protocol. It is the
+   median market-cap-over-TV L of the live-token protocols in that protocol's own category. If a
+   category has too few live peers, the all-category median is used as a fallback. This is the
+   single biggest determinant of the number.
 
 2. **Size** — `tvl_usd` raised to `size_exponent` (0.75). A $100M protocol is not worth 10× what a
    $10M protocol is worth; the exponent caps the scaling so that TVL growth has diminishing
@@ -82,10 +55,8 @@ browser so a reader can check any number against the figures it came from:
 
 4. **Maturity** — how long the protocol has been listed (`age_days` from the snapshot's
    `listed_at`). A protocol that launched last year is less likely to launch a token than one that
-   appeared three weeks ago. The factor decays on a **logarithmic** curve from `age_cap` to
-   `age_floor` over `age_full_decay` days — the first few months of silence matter far more than the
-   thousandth month. A protocol with no `listed_at` is not "very old"; it is "unknown", and gets
-   `unknown_age_maturity` (0.70) instead of being dragged to the floor.
+   appeared three weeks ago. The factor decays from `age_cap` to `age_floor` over
+   `age_full_decay` days. A protocol with no `listed_at` gets the unknown-age default.
 
 The implied value is: `max(1, round(anchor × size × growth × maturity))`.
 
@@ -109,11 +80,8 @@ reasons:
    the number on the board against the inputs it came from.
 
 2. **A farm plan for every row.** Each protocol's detail panel includes the concrete steps to
-   farm its launch: how much capital, on which chain, what action, and what to record. Every step
-   is derived from the protocol's own record — its chains, its TVL depth, its week of movement,
-   and how long it has run without a token — so two protocols in the same category get different
-   plans. The steps are generated by the same logic `main.ts` runs, so they are deterministic and
-   reproducible.
+   farm its launch: how much capital, on which chain, what action, and what to record. The steps
+   are generated by the same logic `main.ts` runs, so they are deterministic and reproducible.
 
 3. **Filterable, sortable, static.** The table can be filtered by category and chain, searched by
    name or slug, and sorted by any column. No network: the page loads `data.js` from the same
