@@ -271,6 +271,15 @@ tbody tr:nth-child(-n+3) .rank { color: var(--accent); font-size: 15px; }
 
 .empty { padding: var(--s8); text-align: center; color: var(--ink-faint); }
 
+/* The board draws itself from data.js, so with scripting off there is nothing to render. The
+   noscript block says so, and says where the same rows are in plain files. */
+.noscript {
+  max-width: 70ch; margin: var(--s7) auto; padding: var(--s5);
+  border: 1px solid var(--line); border-radius: var(--radius-l);
+  background: var(--bg-raise); color: var(--ink-dim); font-size: 14px; line-height: 1.6;
+}
+.noscript code { font-family: var(--font-num); color: var(--ink); }
+
 /* ---- footer ---- */
 footer {
   margin-top: var(--s7); padding-top: var(--s4); border-top: 1px solid var(--line-soft);
