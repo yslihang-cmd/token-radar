@@ -112,8 +112,9 @@
     var action = actionFor(p, capital, chain);
     var gas = capital >= 150 ? 8 : 4;
     var all = p.chains || [];
+    var named = all.length > 5 ? all.slice(0, 5).join(', ') + ' and ' + (all.length - 5) + ' more' : all.join(', ');
     var cross = all.length > 1
-      ? "It records " + all.length + ' chains — ' + all.join(', ') + ' — so mirror the position on a second one, starting with ' + chain + ' and adding ' + all[1] + ", to make sure the launch is not read off a single chain's books."
+      ? "It records " + all.length + ' chains — ' + named + ' — so mirror the position on a second one, starting with ' + chain + ' and adding ' + all[1] + ", to make sure the launch is not read off a single chain's books."
       : 'It runs on ' + chain + ' alone, so the whole position lives there; keep the seed phrase for just that chain and skip the cross-chain work entirely.';
     var depth = 'Its TVL of ' + tvlDepth(p.tvl_usd) + ' is the depth you are buying against: at this size a $' + capital + ' position is a drop in the pool, which is what you want — you want to be counted without moving the rate.';
     var momentum = momentumLine(p.change_7d, p.tvl_usd);
