@@ -232,9 +232,9 @@
       formula,
       el('p', { class: 'note', html:
         'Every figure comes from the sealed snapshot itself: <b>TVL</b>, the <b>seven-day TVL change</b>, <b>days listed</b>, the <b>category</b> and the <b>chains</b> a protocol records. ' +
-        'The anchor is read out of the same file: each protocol that <b>already has a token</b> and a real market cap contributes one observation of market cap over TVL raised to the size exponent, and the median of those observations in a category is what a protocol of that category would be worth if it issued one. ' +
-        'When a category has only a handful of live peers, that median is a thin number, so it is <b>blended on the logarithm with the all-category median</b>, in proportion to how many peers it actually has — one observation trusts the category a quarter and the rest of the market three quarters. ' +
-        'Growth lifts a launch that is close; age lowers one that has clearly been decided against, on a logarithmic curve so the first months of silence count far more than the thousandth. Nothing in the model reads a protocol’s name.' }));
+        'The anchor is read out of the same file — each protocol that <b>already has a token</b> and a real market cap contributes one observation of market cap over TVL raised to the size exponent, and a category’s median is what a protocol of that category would fetch if it issued one. ' +
+        'A thin category is <b>blended on the logarithm with the all-category median</b>, in proportion to how many peers it has: one observation trusts the category a quarter and the market three quarters. ' +
+        'Growth lifts a launch that is close; age lowers one that has clearly been decided against. Nothing in the model reads a protocol’s name.' }));
 
     return el('header', { class: 'masthead' },
       el('div', { class: 'masthead-top' },

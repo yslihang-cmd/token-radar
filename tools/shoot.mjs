@@ -143,9 +143,9 @@ async function shootRegion(file, y) {
 await goto(pageUrl);
 
 // 1. The board: the masthead, the model card and the first rows of the ranking, so a reader sees
-//    what the estimate is and what it ranks in one look. The frame is scrolled by a hundred-odd
-//    pixels so it lands inside the size band without cutting the product title off.
-await evaluate('window.scrollTo(0, 120)');
+//    what the estimate is and what it ranks in one look. The frame opens at the top, where the
+//    product title is, and its size is kept inside the band by the model card's own text.
+await evaluate('window.scrollTo(0, 0)');
 await new Promise((r) => setTimeout(r, 400));
 await shoot(join(shotsDir, '1-board.png'));
 
