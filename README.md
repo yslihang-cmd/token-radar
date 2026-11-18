@@ -26,7 +26,16 @@ Then validate locally:
 node tools/check-gate.mjs out input/snapshot.json
 ```
 
-Seven checks: board file, sort order, coverage, farm steps, dashboard files, screenshots, dossier.
+Eight checks: board file, sort order, coverage, farm steps, the page agreeing with the board,
+dashboard files, screenshots, dossier.
+
+The page-agreement check opens the built dashboard in a real browser, reads every row's farm plan
+out of the rendered DOM, and compares it with the string `board.json` carries — the screenshots and
+the code have to tell the same story. The same comparison without a browser:
+
+```sh
+node tools/check-parity.mjs out
+```
 
 Regenerate screenshots (requires a running Chrome/Chromium with a debug port, or the script's own
 headless instance):
@@ -38,7 +47,9 @@ bash tools/screenshots.sh out screenshots
 ## The model
 
 Every protocol on the board gets an implied value — what a launch would be worth if the protocol's
-record stayed as it is. The model has four factors, all read out of the snapshot itself:
+record stayed as it is. The model has four factors, all read out of the snapshot itself. The page
+names the version it runs (`radar-3`), and the dashboard recomputes the same arithmetic in the
+browser so a reader can check any number against the figures it came from:
 
 1. **Anchor** — `anchor_fdv_tvl`, a multiple of TVL the model applies to each protocol. It starts
    as the median market-cap-over-TV L of the live-token protocols in that protocol's own category.

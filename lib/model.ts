@@ -73,8 +73,6 @@ export interface ModelConstants {
   age_cap: number;
   /** Age in days at which the maturity term is at its floor. */
   age_full_decay: number;
-  /** The age used when the snapshot records no listing date. */
-  unknown_age_days: number;
   /** The maturity value an unknown-age protocol gets, instead of being penalised as very old. */
   unknown_age_maturity: number;
   /** TVL below which a protocol is not a launch candidate worth a reader's time. */
@@ -89,7 +87,6 @@ export const MODEL: ModelConstants = {
   age_floor: 0.35,
   age_cap: 1.0,
   age_full_decay: 1460,
-  unknown_age_days: 540,
   unknown_age_maturity: 0.7,
   min_tvl_usd: 5_000_000,
 };
@@ -245,9 +242,6 @@ const DERIVATIVE_CATEGORIES = new Set([
 /** A name carrying one of these whole words is a product of something that already trades. */
 const DERIVATIVE_WORD = /\b(wrapped|staked|staking|staked)\b/i;
 
-/** An exchange's own name at the front of a protocol's name: the exchange's product, not a protocol. */
-const EXCHANGE_NAMES = ['Binance', 'Coinbase', 'Bybit', 'Kraken', 'Bitget', 'OKX', 'Bitfinex', 'Gemini'];
-
 /** Whether a protocol records no token at all. */
 export function isPreToken(p: SnapshotProtocol): boolean {
   return p.mcap_usd === null && p.gecko_id === null && p.symbol === null;
@@ -255,15 +249,14 @@ export function isPreToken(p: SnapshotProtocol): boolean {
 
 /**
  * Whether a protocol is one the board may rank: it records no token, and it is a protocol in its
- * own right rather than a wrapped, staked, bridged or exchange-branded product of something that
- * already trades. WBTC is Bitcoin on Ethereum, Binance's staked ETH is ETH in a staking product,
- * and neither is a protocol still waiting on a launch of its own.
+ * own right rather than a wrapped, staked or bridged product of something that already trades.
+ * WBTC is Bitcoin on Ethereum, Binance's staked ETH is ETH in a staking product, and neither is a
+ * protocol still waiting on a launch of its own.
  */
 export function isRankable(p: SnapshotProtocol): boolean {
   if (!isPreToken(p)) return false;
   if (p.category !== null && DERIVATIVE_CATEGORIES.has(p.category)) return false;
   if (DERIVATIVE_WORD.test(p.name)) return false;
-  if (EXCHANGE_NAMES.some((e) => p.name.startsWith(e))) return false;
   if (VERSIONED.test(p.name)) return false;
   return true;
 }
@@ -529,8 +522,11 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const action = actionFor(p, capital, chain);
   const gas = capital >= 150 ? 8 : 4;
   const all = p.chains;
+  // A protocol on forty-five chains does not need forty-five names in one sentence: the count is
+  // the fact that matters, and a short list beside it is enough to act on.
+  const named = all.length > 5 ? `${all.slice(0, 5).join(', ')} and ${all.length - 5} more` : all.join(', ');
   const cross = all.length > 1
-    ? `It records ${all.length} chains — ${all.join(', ')} — so mirror the position on a second one, starting with ${chain} and adding ${all[1]!}, to make sure the launch is not read off a single chain's books.`
+    ? `It records ${all.length} chains — ${named} — so mirror the position on a second one, starting with ${chain} and adding ${all[1]!}, to make sure the launch is not read off a single chain's books.`
     : `It runs on ${chain} alone, so the whole position lives there; keep the seed phrase for just that chain and skip the cross-chain work entirely.`;
   const depth = `Its TVL of ${tvlDepth(p.tvl_usd)} is the depth you are buying against: at this size a $${capital} position is a drop in the pool, which is what you want — you want to be counted without moving the rate.`;
   const momentum = momentumLine(p.change_7d, p.tvl_usd);
