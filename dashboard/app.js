@@ -201,7 +201,7 @@
       el('div', { class: 'stat accent' },
         el('div', { class: 'k', text: 'Launch candidates' }),
         el('div', { class: 'v', html: total + '<small>ranked</small>' }),
-        el('div', { class: 'n', text: watch + ' on the house watchlist, ' + early + ' found below its floor' })),
+        el('div', { class: 'n', text: watch + ' on the house watchlist, ' + early + ' more found by the scan' })),
       el('div', { class: 'stat' },
         el('div', { class: 'k', text: 'Implied value, top 20' }),
         el('div', { class: 'v', html: fmtUsd(sum) }),
@@ -219,9 +219,9 @@
     formula.innerHTML =
       '<span class="term">implied_value</span> = <span class="term2">anchor</span> × <span class="term">TVL</span><sup>' + DATA.model.size_exponent + '</sup> × <span class="term2">growth</span> × <span class="term">maturity</span>' +
       '<br>' +
-      '<span class="term2">anchor</span> = median FDV/TVL of this protocol’s own category, blended on the logarithm with the all-category median (' + DATA.global_anchor.toFixed(2) + '): with k live peers, trust = k ÷ (k + 3)' +
+      '<span class="term2">anchor</span> = median of (market cap ÷ TVL<sup>' + DATA.model.size_exponent + '</sup>) over this protocol’s own live peers, blended on the logarithm with the all-category median (' + DATA.global_anchor.toFixed(2) + '): with k live peers, trust = k ÷ (k + 3)' +
       '<br>' +
-      '<span class="term">growth</span> = 1 + ' + DATA.model.growth_weight + ' × 7d TVL change, clamped to [' + DATA.model.growth_floor + '%, ' + DATA.model.growth_cap + '%]' +
+      '<span class="term">growth</span> = 1 + ' + DATA.model.growth_weight + ' × (7d TVL change ÷ 100), clamped to [' + DATA.model.growth_floor + '%, ' + DATA.model.growth_cap + '%]' +
       '<br>' +
       '<span class="term">maturity</span> = ' + DATA.model.age_cap + ' − ' + (DATA.model.age_cap - DATA.model.age_floor) + ' × ln(1 + days) ÷ ln(1 + ' + DATA.model.age_full_decay + '); unknown listing date → ' + DATA.model.unknown_age_maturity + ' &nbsp;&nbsp;·&nbsp;&nbsp; no protocol name is special-cased';
 
@@ -232,7 +232,7 @@
       formula,
       el('p', { class: 'note', html:
         'Every figure comes from the sealed snapshot itself: <b>TVL</b>, the <b>seven-day TVL change</b>, <b>days listed</b>, the <b>category</b> and the <b>chains</b> a protocol records. ' +
-        'The anchor is read out of the same file: each protocol that <b>already has a token</b> and a real market cap contributes one observation of market cap over TVL, and the median of those observations in a category is what a protocol of that category would be worth if it issued one. ' +
+        'The anchor is read out of the same file: each protocol that <b>already has a token</b> and a real market cap contributes one observation of market cap over TVL raised to the size exponent, and the median of those observations in a category is what a protocol of that category would be worth if it issued one. ' +
         'When a category has only a handful of live peers, that median is a thin number, so it is <b>blended on the logarithm with the all-category median</b>, in proportion to how many peers it actually has — one observation trusts the category a quarter and the rest of the market three quarters. ' +
         'Growth lifts a launch that is close; age lowers one that has clearly been decided against, on a logarithmic curve so the first months of silence count far more than the thousandth. Nothing in the model reads a protocol’s name.' }));
 
@@ -338,9 +338,9 @@
 
       var scopeLabel = r.anchor_scope === 'category' ? 'category' : 'global';
       var scopeTip = r.anchor_scope === 'category'
-        ? 'Anchored to the median FDV/TVL of ' + r.anchor_peers + ' live peers in this protocol’s own category, blended on the logarithm with the all-category median by how thin that sample is'
-        : 'Anchored to the all-category median FDV/TVL (no priced live peers recorded in this category)';
-      tr.appendChild(el('td', { class: 'num dim anchor-scope', title: scopeTip, text: scopeLabel }));
+        ? 'Anchored to the median of (market cap ÷ TVL^' + DATA.model.size_exponent + ') over ' + r.anchor_peers + ' live peers in this protocol’s own category, blended on the logarithm with the all-category median by how thin that sample is'
+        : 'Anchored to the all-category median of (market cap ÷ TVL^' + DATA.model.size_exponent + ') — no priced live peers are recorded in this category';
+      tr.appendChild(el('td', { class: 'num dim anchor-scope scope-' + r.anchor_scope, title: scopeTip, text: scopeLabel }));
 
       var bar = el('div', { class: 'bar' }, el('i', { style: 'width:' + Math.max(2, Math.round((r.implied_value_usd / max) * 100)) + '%' }));
       tr.appendChild(el('td', null, el('div', { class: 'value', text: fmtUsd(r.implied_value_usd) }), bar));
@@ -372,7 +372,7 @@
         el('td', { class: 'num ' + (r.change_7d === null ? 'dim' : r.change_7d >= 0 ? 'pos' : 'neg'), text: fmtPct(r.change_7d) })));
     });
     return el('div', null,
-      el('p', { class: 'live-note', html: 'These protocols <b>already have a token</b>: their value is the market’s, not the model’s. They are listed apart from the board, and their market cap over TVL is what the board’s anchor is measured against.' }),
+      el('p', { class: 'live-note', html: 'These protocols <b>already have a token</b>: their value is the market’s, not the model’s. They are listed apart from the board, and their market cap over TVL is what the board’s anchor is measured against — the anchor reads each live peer’s market cap over its own size, then takes the median of those observations in a category.' }),
       el('div', { class: 'board' }, el('table', null, thead, tbody)));
   }
 
