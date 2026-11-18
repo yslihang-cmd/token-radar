@@ -113,13 +113,13 @@
     var gas = capital >= 150 ? 8 : 4;
     var all = p.chains || [];
     var cross = all.length > 1
-      ? 'It records ' + all.length + ' chains — ' + all.join(', ') + ' — so mirror the position on a second one, starting with ' + chain + ' and adding ' + all[1] + ', to make sure the launch is not read off a single chain's books.'
+      ? "It records " + all.length + ' chains — ' + all.join(', ') + ' — so mirror the position on a second one, starting with ' + chain + ' and adding ' + all[1] + ", to make sure the launch is not read off a single chain's books."
       : 'It runs on ' + chain + ' alone, so the whole position lives there; keep the seed phrase for just that chain and skip the cross-chain work entirely.';
     var depth = 'Its TVL of ' + tvlDepth(p.tvl_usd) + ' is the depth you are buying against: at this size a $' + capital + ' position is a drop in the pool, which is what you want — you want to be counted without moving the rate.';
     var momentum = momentumLine(p.change_7d, p.tvl_usd);
     var ageLine = p.age_days === null || p.age_days === undefined
       ? 'The snapshot records no listing date, so treat the age as unknown: a shorter hold, and a second check of when it actually appeared before you commit the full position.'
-      : 'It has been listed ' + p.age_days + ' days — about ' + Math.max(1, Math.round(p.age_days / 30)) + ' months — without a token, which is why the model's own maturity term holds its value down, and the plan's job is to keep the position while that timer runs.';
+      : "It has been listed " + p.age_days + ' days — about ' + Math.max(1, Math.round(p.age_days / 30)) + " months — without a token, which is why the model's own maturity term holds its value down, and the plan's job is to keep the position while that timer runs.";
     return [
       { text: 'Use a fresh wallet that holds only the $' + capital + ' you plan to farm on ' + chain + ', and keep its seed phrase offline.', cost: 'under $' + gas + ' of gas for the first transaction on ' + chain, time: '5 minutes' },
       { text: action, cost: '$' + capital + ' of capital and about $' + gas + ' of gas', time: '15 minutes to set up' },
@@ -398,9 +398,11 @@
 
     var stepList = el('ol', { class: 'steps' });
     steps.forEach(function (s) {
+      // The cost and the time read as the model's own sentence, so the page shows the same string
+      // board.json carries for this step: "action Cost: cost. Time: time."
       stepList.appendChild(el('li', null,
-        el('span', { text: s.text }),
-        el('span', { class: 'meta', html: '<span class="cost">' + esc(s.cost) + '</span> · ' + esc(s.time) })));
+        el('span', { text: s.text + ' Cost: ' }),
+        el('span', { class: 'meta', html: '<span class="cost">' + esc(s.cost) + '</span>. Time: ' + esc(s.time) })));
     });
 
     var head = el('header', null,
